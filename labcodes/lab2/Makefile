@@ -46,19 +46,19 @@ endif
 # define compiler and flags
 ifndef  USELLVM
 HOSTCC		:= gcc
-HOSTCFLAGS	:= -g -Wall -O2
+HOSTCFLAGS	:= -g3 -Wall
 CC		:= $(GCCPREFIX)gcc
-CFLAGS	:= -fno-builtin -fno-PIC -Wall -ggdb -m32 -gstabs -nostdinc $(DEFS)
+CFLAGS	:= -fno-builtin -fno-PIC -Wall -ggdb -gdwarf-2 -m32 -nostdinc $(DEFS)
 CFLAGS	+= $(shell $(CC) -fno-stack-protector -E -x c /dev/null >/dev/null 2>&1 && echo -fno-stack-protector)
 else
 HOSTCC		:= clang
-HOSTCFLAGS	:= -g -Wall -O2
+HOSTCFLAGS	:= -g3 -Wall
 CC		:= clang
-CFLAGS	:= -fno-builtin -fno-PIC -Wall -g -m32 -mno-sse -nostdinc $(DEFS)
+CFLAGS	:= -fno-builtin -fno-PIC -Wall -gdwarf-2 -g3 -m32 -mno-sse -nostdinc $(DEFS)
 CFLAGS	+= $(shell $(CC) -fno-stack-protector -E -x c /dev/null >/dev/null 2>&1 && echo -fno-stack-protector)
 endif
 
-GDB		:= $(GCCPREFIX)gdb
+GDB		:= $(GCCPREFIX)cgdb
 CTYPE	:= c S
 
 LD      := $(GCCPREFIX)ld

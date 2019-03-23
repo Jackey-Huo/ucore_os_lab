@@ -1,3 +1,13 @@
+break basic_check
+break default_check
+
 file bin/kernel
 target remote :1234
+macro define offsetof(type, member)   ((size_t)(&((type *)0)->member))
+macro define to_struct(ptr, type, member) ((type *)((char *)(ptr) - offsetof(type, member)))
+macro define le2page(le, member)  to_struct((le), struct Page, member)
+macro define p_free  *(le2page(free_area.free_list->next, page_link))
+
 break kern_init
+b check_pgdir
+b kern/mm/pmm.c:469
