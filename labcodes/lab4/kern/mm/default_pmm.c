@@ -135,12 +135,12 @@ default_alloc_pages(size_t n) {
         }
     }
     if (page != NULL) {
-        list_del(&(page->page_link));
         if (page->property > n) {
             struct Page *p = page + n;
             p->property = page->property - n;
-            list_add(&free_list, &(p->page_link));
-    }
+            list_add_after(&(page->page_link), &(p->page_link));
+        }
+        list_del(&(page->page_link));
         nr_free -= n;
         ClearPageProperty(page);
     }
@@ -158,24 +158,44 @@ default_free_pages(struct Page *base, size_t n) {
     }
     base->property = n;
     SetPageProperty(base);
-    list_entry_t *le = list_next(&free_list);
-    while (le != &free_list) {
+    list_entry_t *le = &free_list;
+    while (le->next != &free_list) {  // find a proper position for base
+        struct Page* p_next = le2page(le->next, page_link);
+        // edge case
+        if ( le->next == &free_list ){
+            break;
+        }
+
+        if (  base < p_next ) {
+            break;
+        } else {
+            le = le->next;
+        }
+    }
+
+    // try to merge with previous
+    if ( le != &free_list ) {
         p = le2page(le, page_link);
-        le = list_next(le);
+        if (p + p->property == base) {
+            p->property += base->property;
+            ClearPageProperty(base);
+            base = p;
+            le = le->prev;
+            list_del(&(p->page_link));
+        }
+    }
+    // try to merge with next
+    if ( le->next != &free_list ) {
+        p = le2page(le->next, page_link);
         if (base + base->property == p) {
             base->property += p->property;
             ClearPageProperty(p);
             list_del(&(p->page_link));
         }
-        else if (p + p->property == base) {
-            p->property += base->property;
-            ClearPageProperty(base);
-            base = p;
-            list_del(&(p->page_link));
-        }
     }
+
     nr_free += n;
-    list_add(&free_list, &(base->page_link));
+    list_add_after(le, &(base->page_link));
 }
 
 static size_t
@@ -234,7 +254,7 @@ basic_check(void) {
     free_page(p2);
 }
 
-// LAB2: below code is used to check the first fit allocation algorithm (your EXERCISE 1) 
+// LAB2: below code is used to check the first fit allocation algorithm (your EXERCISE 1)
 // NOTICE: You SHOULD NOT CHANGE basic_check, default_check functions!
 static void
 default_check(void) {
