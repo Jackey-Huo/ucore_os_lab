@@ -3,7 +3,7 @@ EMPTY	:=
 SPACE	:= $(EMPTY) $(EMPTY)
 SLASH	:= /
 
-V       := @
+#V       := @
 
 # try to infer the correct GCCPREFX
 ifndef GCCPREFIX
@@ -45,7 +45,7 @@ endif
 HOSTCC		:= gcc
 HOSTCFLAGS	:= -g -Wall -O2
 
-GDB		:= $(GCCPREFIX)gdb
+GDB		:= $(GCCPREFIX)cgdb
 
 CC		:= $(GCCPREFIX)gcc
 CFLAGS	:= -fno-builtin -fno-PIC -Wall -ggdb -m32 -gstabs -nostdinc $(DEFS)

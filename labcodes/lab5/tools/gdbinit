@@ -1,3 +1,9 @@
 file bin/kernel
 target remote :1234
 break kern_init
+break init_main
+break do_exit
+break kern/process/proc.c:456
+break kern/init/init.c:52
+break do_execve
+break user_main
