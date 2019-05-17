@@ -127,7 +127,6 @@ default_alloc_pages(size_t n) {
     }
     struct Page *page = NULL;
     list_entry_t *le = &free_list;
-    // TODO: optimize (next-fit)
     while ((le = list_next(le)) != &free_list) {
         struct Page *p = le2page(le, page_link);
         if (p->property >= n) {
@@ -246,7 +245,7 @@ basic_check(void) {
     free_page(p2);
 }
 
-// LAB2: below code is used to check the first fit allocation algorithm (your EXERCISE 1) 
+// LAB2: below code is used to check the first fit allocation algorithm (your EXERCISE 1)
 // NOTICE: You SHOULD NOT CHANGE basic_check, default_check functions!
 static void
 default_check(void) {
