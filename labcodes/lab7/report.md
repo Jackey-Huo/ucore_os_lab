@@ -2,7 +2,7 @@
 
 ## 练习1
 
-**对比一下练习0之后的代码和lab6有什么不同.**
+**1. 对比一下练习0之后的代码和lab6有什么不同.**
 
 对比命令如下
 
@@ -40,9 +40,136 @@ diff -bur --suppress-common-lines --suppress-blank-empty . ../lab6
     - ./kern/sync: wait.h
 
 
-**请在实验报告中给出内核级信号量的设计描述，并说明其大致执行流程。**
+**2. 请在实验报告中给出内核级信号量的设计描述，并说明其大致执行流程。**
 
+信号量的数据结构, 以及相关的数据结构
 
+```c
+typedef struct {
+    int value;
+    wait_queue_t wait_queue;
+} semaphore_t;
+
+typedef struct {
+    list_entry_t wait_head;
+} wait_queue_t;
+
+typedef struct {
+    struct proc_struct *proc;
+    uint32_t wakeup_flags;
+    wait_queue_t *wait_queue;
+    list_entry_t wait_link;
+} wait_t;
+```
+
+他们各自相关的方法就不一一列了, 不然太长... 下面描述一下信号量的操作和semaphore_t里面变量的
+意义
+
+`value`变量用来记录可获取的资源数, > 0 时说明空闲, 当前信号量可以被获取, <= 0 时说明有线程正在
+占用这个信号量, 不能被获取; `wait_queue` 就是个链表, 存储对应的 `wait` 型对象, 里面包含等待的
+进程指针和相关的flag等等信息.
+
+有关信号量的PV操作, P(wait) V(signal), 这个荷兰语的缩写实在是太别扭, 所以下面就说 等待 和 释放
+把.
+
+`void up(semaphore_t *sem)` 函数用来释放信号量, 内部使用 WT_KSEM flag调用 `__up` 函数实现, 这个
+函数逻辑如下.
+
+```c
+static __noinline void __up(semaphore_t *sem, uint32_t wait_state) {
+    bool intr_flag;
+    local_intr_save(intr_flag);
+    {
+        wait_t *wait;
+        if ((wait = wait_queue_first(&(sem->wait_queue))) == NULL) {
+            sem->value ++;
+        }
+        else {
+            assert(wait->proc->wait_state == wait_state);
+            wakeup_wait(&(sem->wait_queue), wait, wait_state, 1);
+        }
+    }
+    local_intr_restore(intr_flag);
+}
+```
+
+大意就是关了中断, 如果等待队列空了, 就增加value值, 没空的话, 检查一下wait_state 然后唤醒对应
+的进程, 顺手把这个wait从链表里摘除
+
+`void down(semaphore_t *sem)` 用来获取信号量, 内部调用`__down`, 这个函数是阻塞等待的, 如果信
+号量无法获取的话当前进程会被推入等待队列, 等待唤醒, 逻辑如下:
+
+```c
+static __noinline uint32_t __down(semaphore_t *sem, uint32_t wait_state) {
+    bool intr_flag;
+    local_intr_save(intr_flag);
+    if (sem->value > 0) {
+        sem->value --;
+        local_intr_restore(intr_flag);
+        return 0;
+    }
+    wait_t __wait, *wait = &__wait;
+    wait_current_set(&(sem->wait_queue), wait, wait_state);
+    local_intr_restore(intr_flag);
+
+    schedule();
+
+    local_intr_save(intr_flag);
+    wait_current_del(&(sem->wait_queue), wait);
+    local_intr_restore(intr_flag);
+
+    if (wait->wakeup_flags != wait_state) {
+        return wait->wakeup_flags;
+    }
+    return 0;
+}
+```
+
+大意是关了中断, 然后如果value > 0 (信号量可以被获取), 就回复中断状态直接返回, 不行的话, 把当前的
+进程塞到等待队列里, 然后调用 `schdule()`. schedule之后其实就跳到了其他的线程, 所以对与这一段代码
+来说, 从 schedule() 出来的时候其实已经成功的获取了 sem 信号量了, 所以把当前进程对应的wait从wait_queue
+里摘下来, 然后检查一下wait_state, 直接返回就可以了.
+
+`bool try_down(semaphore_t * sem)` 是非阻塞的尝试获取信号量, 如果sem可以被获取(value > 0), value -- 
+然后返回 true, 否则返回false (为了防止被打断导致结果错误, 需要关中断), 因为不需要等待, 也就没有
+将当前进程压入等待队列的需求, 逻辑就简单的多了, 代码如下:
+
+```c
+bool
+try_down(semaphore_t *sem) {
+    bool intr_flag, ret = 0;
+    local_intr_save(intr_flag);
+    if (sem->value > 0) {
+        sem->value --, ret = 1;
+    }
+    local_intr_restore(intr_flag);
+    return ret;
+}
+```
+
+**3. 请在实验报告中给出给用户态进程/线程提供信号量机制的设计方案，并比较说明给内核级提供信号量机制的异同。**
+
+Linux里面比较常见的用户态信号量有两种: POSIX 信号量 和 System V 信号量. 我对POSIX信号量相对来说
+比较熟悉, 所以就按照这个给出一个设计方案.
+
+首先, 不管怎么说, 信号量实现肯定要涉及进程调度, 肯定需要内核态代码, 所以用户态相关的信号量操作需要
+搞成系统调用的形式, 参考POSIX的设计, 给出API如下
+
+    - sem_open: 打开或者创建一个信号量, 并且对它进行初始化
+    - sem_close: 关闭并删除一个信号量
+    - sem_getvalue: 拿到信号量的value值
+    - sem_wait, sem_post: 信号量的PV操作函数
+
+真正的POSIX信号量操作函数比上面列的多得多, 但是ucore也用不着那么多细致的区分, 所以想 sem_init, sem_destory,
+sem_unlink... 之类的功能就都被我合并或者直接拿掉了.
+
+为了能够让各个进程通过系统调用操作同一个信号量, 完成同步的目的, 需要在内核中专门划一段内存, 放所有的信号量的
+数据.
+
+综上, 内核态和用户态的信号量机制的不同主要有一下2点
+
+    1. 内核态信号量可以直接调用相关的信号量操作函数, 并且直接完成进程切换; 用户态需要通过系统调用来完成
+    2. 内核态的信号量直接放在内核栈上就可以了; 用户态信号量需要内核专门划一片共享内存来存
 
 ## 练习2
 
