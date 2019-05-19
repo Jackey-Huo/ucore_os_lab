@@ -173,6 +173,138 @@ sem_unlink... 之类的功能就都被我合并或者直接拿掉了.
 
 ## 练习2
 
+说实话, ucore里用cv给科学家加条件的解法有点乱, 性能上的表现不说, 逻辑上比较复杂, 但是为了用上条件变量是吧 ;)
+在这里先梳理一下:
+
+每个科学家的就餐顺序是酱婶儿的:
+
+```
+for N 次
+    思考
+    妄图拿起叉子(阻塞等待)
+    吃吃吃
+    放下叉子
+```
+
+这里比较令人费解的是对左右叉子状态的检测和拿起叉子成功的触发, phi_test_condvar 和 phi_put_forks_condvar 在
+里面比较关键, 列在下面.
+
+```c
+void phi_test_condvar (i) {
+    if(state_condvar[i]==HUNGRY&&state_condvar[LEFT]!=EATING
+            &&state_condvar[RIGHT]!=EATING) {
+        cprintf("phi_test_condvar: state_condvar[%d] will eating\n",i);
+        state_condvar[i] = EATING ;
+        cprintf("phi_test_condvar: signal self_cv[%d] \n",i);
+        cond_signal(&mtp->cv[i]) ;
+    }
+}
+
+void phi_put_forks_condvar(int i) {
+     down(&(mtp->mutex));
+
+    state_condvar[i] = THINKING;  // I ate over
+    phi_test_condvar(LEFT);  // test left and right neighbors
+    phi_test_condvar(RIGHT); // ...
+     if(mtp->next_count>0)
+        up(&(mtp->next));
+     else
+        up(&(mtp->mutex));
+}
+
+void phi_take_forks_condvar(int i) {
+     down(&(mtp->mutex));
+    state_condvar[i] = HUNGRY;  // I am hungry
+    phi_test_condvar(i);  // try to get fork
+    if (state_condvar[i] != EATING) {
+        cprintf("phi_take_forks_condvar: %d didn't get fork and will wait\n",i);
+        cond_wait(&mtp->cv[i]);
+    }
+      if(mtp->next_count>0)
+         up(&(mtp->next));
+      else
+         up(&(mtp->mutex));
+}
+```
+
+可以看到, 这个逻辑是, 每当有人放下叉子(也就是叉子状态产生了更新时), 显式的调用左右的test, 如果成功就释放这科学家
+对应的信号量, 这样阻塞在 phi_take_forks_condvar 里的cond_wait 就有机会返回, 然后在 take操作里, 因为test里面已经
+把EATING的状态设好了, 就可以直接往下走了, 释放monitor或者将处理权限移交给其他进程之类的
+
+不得不说, 这个逻辑真是凌乱的让人吐血...
+
+**1. 请在实验报告中给出内核级条件变量的设计描述，并说明其大致执行流程。**
+
+在ucore里面, condition variable 的实现是伴随着 monitor 机制一起实现的, 但是因为平常 monitor的概念其实
+用的比较少, 所以下面的分析就不太着重介绍 monitor 相关的逻辑, 直接说条件变量了.
+
+首先, 条件变量和monitor的数据结构如下
+
+```c
+typedef struct monitor{
+    semaphore_t mutex;      // the mutex lock for going into the routines in monitor, should be initialized to 1
+    semaphore_t next;       // the next semaphore is used to down the signaling proc itself, and the other OR wakeuped waiting proc should wake up the sleeped signaling proc.
+    int next_count;         // the number of of sleeped signaling proc
+    condvar_t *cv;          // the condvars in monitor
+} monitor_t;
+
+typedef struct condvar{
+    semaphore_t sem;        // the sem semaphore  is used to down the waiting proc, and the signaling proc should up the waiting proc
+    int count;              // the number of waiters on condvar
+    monitor_t * owner;      // the owner(monitor) of this condvar
+} condvar_t;
+```
+
+monitor里的 mutex 是用来获取这个 monitor的, 因此 take 和 put 函数进入的时候都要阻塞获取这个mutex, 初始化的时候
+资源数是1; next 这个信号量是用来处理monitor里等待着的进程的, 初始化资源数是0, 因此在很多地方可以看到, next_count
+等于 0 直接释放 mutex, 大于0就释放 next, cond_signal 函数里面释放了当前cv的sem之后也是对next_count进行自增然后
+等待 next 信号量. 某种程度上, 我们可以认为 mutex 和 next 交替持有monitor的运行资源.
+
+比较重要的两个函数 cond_signal, cond_wait 如下:
+
+```c
+// Unlock one of threads waiting on the condition variable.
+void
+cond_signal (condvar_t *cvp) {
+   cprintf("cond_signal begin: cvp %x, cvp->count %d, cvp->owner->next_count %d\n", cvp, cvp->count, cvp->owner->next_count);
+   if (cvp->count > 0) {
+       cvp->owner->next_count++;
+       up(&(cvp->sem));
+       down(&(cvp->owner->next));
+       cvp->owner->next_count--;
+   }
+   cprintf("cond_signal end: cvp %x, cvp->count %d, cvp->owner->next_count %d\n", cvp, cvp->count, cvp->owner->next_count);
+}
+
+void
+cond_wait (condvar_t *cvp) {
+    cprintf("cond_wait begin:  cvp %x, cvp->count %d, cvp->owner->next_count %d\n", cvp, cvp->count, cvp->owner->next_count);
+    cvp->count++;
+    if (cvp->owner->next_count > 0) {
+        up(&(cvp->owner->next));
+    } else {
+        up(&(cvp->owner->mutex));
+    }
+    down(&(cvp->sem));
+    cvp->count--;
+    cprintf("cond_wait end:  cvp %x, cvp->count %d, cvp->owner->next_count %d\n", cvp, cvp->count, cvp->owner->next_count);
+}
+```
+
+cond_wait首先自增count值, 然后释放monitor的资源(给next或者mutex), 之后等待 sem 被释放(就是等待cond_signal), 最后自减count值;
+cond_signal里首先自增 next_count值, 释放 sem 然后等待next, 最后自减 next_count值.
+
+monitor里的mutex 和 next 有点类似于STL库里 std::condition_variable.wait 函数调用时的 std::unique_lock<std::mutex>& 参数.
+
+**2. 请在实验报告中给出给用户态进程/线程提供条件变量机制的设计方案，并比较说明给内核级提供条件变量机制的异同。**
+
+用户态的condition variable和内核态基本上是一样的, 不同在于, 依赖信号量的地方需要使用系统调用(详见前面关于POSIX信号量的API描述)
+
+
+**3. 能否不用基于信号量机制来完成条件变量**
+
+能, 其实用锁就可以, 但是需要2把锁, 一个全局锁, 一个条件锁. cv.wait进入的时候释放全局锁, 等待条件锁, cv.signal的时候释放条件锁.
+
 
 ## 最后, 在读代码的时候的一点感想 -- 代码里的冗余传参和正确性检验
 
